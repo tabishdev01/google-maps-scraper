@@ -315,6 +315,7 @@ resetBtn.addEventListener('click', () => {
 </html>"""
 
 def scrape_place_reviews(url, max_reviews, sort_by, job_id):
+    """Scrape reviews from a single Google Maps place URL"""
     job = jobs[job_id]
     def log(msg, cls=''):
         job['logs'].append({'msg': msg, 'cls': cls})
@@ -322,147 +323,154 @@ def scrape_place_reviews(url, max_reviews, sort_by, job_id):
     reviews = []
     place_name = 'Unknown'
 
+    playwright = None
+    browser = None
     try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
-            context = browser.new_context(viewport={'width': 1920, 'height': 1080}, locale='en-US', timezone_id='UTC')
-            page = context.new_page()
-            page.goto(url, timeout=90000)  # Increased timeout
-            log('→ Loading page...')
+        playwright = sync_playwright().start()
+        browser = playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        context = browser.new_context(viewport={'width': 1920, 'height': 1080}, locale='en-US', timezone_id='UTC')
+        page = context.new_page()
 
-            # Extra wait for full load
-            time.sleep(5)  # or page.wait_for_load_state('networkidle')
+        log('→ Loading page...')
+        page.goto(url, timeout=90000, wait_until='networkidle')
+        page.wait_for_timeout(5000)  # Extra wait for dynamic content
 
-            # Scroll to trigger UI elements
-            page.evaluate("window.scrollBy(0, 500)")
-            time.sleep(1)
+        # Scroll to trigger tabs/UI
+        page.evaluate("window.scrollBy(0, 800)")
+        page.wait_for_timeout(2000)
 
-            # Get place name (assuming h1 is the selector)
-            try:
-                place_name = page.locator('h1').text_content(timeout=10000).strip()
-                log(f'📍 Place: {place_name}')
-            except PlaywrightTimeoutError:
-                log('⚠ Could not find place name')
+        # Extract place name
+        try:
+            place_name = page.locator('h1.DUwDvf').inner_text(timeout=10000).strip()
+            log(f'📍 Place: {place_name}')
+        except:
+            log('⚠ Could not find place name')
 
-            # Try to find and click Reviews tab with multiple selectors
-            reviews_tab = None
-            selectors = [
-                'button:has-text("Reviews")',
-                '[role="tab"][aria-label*="Reviews"]',
-                'button[data-value="Reviews"]',
-                'button[jsaction="pane.rating.moreReviews"]',
-                'div[role="tab"][data-index="1"]',  # Sometimes index-based
-                'button[aria-label*="reviews"]'
+        # Find and click Reviews tab - prioritize get_by_role
+        reviews_tab = None
+        try:
+            reviews_tab = page.get_by_role("tab", name=re.compile(r"Reviews", re.IGNORECASE))
+            if reviews_tab.is_visible(timeout=8000):
+                log('Found Reviews tab via get_by_role')
+        except:
+            pass
+
+        if not reviews_tab:
+            # Fallback selectors from your HTML
+            fallback_selectors = [
+                'button[role="tab"][aria-label*="Reviews"]',
+                'button[data-tab-index="1"]',
+                'button[role="tab"] div.Gpq6kf:has-text("Reviews")',
+                'button.hh2c6[aria-label*="Reviews"]'
             ]
-
-            for sel in selectors:
+            for sel in fallback_selectors:
                 try:
                     tab = page.locator(sel).first
                     if tab.is_visible(timeout=5000):
                         reviews_tab = tab
-                        log(f'Found Reviews tab using {sel}')
+                        log(f'Found Reviews tab via fallback: {sel}')
                         break
-                except PlaywrightTimeoutError:
+                except:
                     pass
 
-            if reviews_tab:
-                reviews_tab.click()
-                time.sleep(5)  # Wait longer for reviews to load
-            else:
-                log('⚠ Could not find Reviews tab after multiple attempts')
+        if reviews_tab:
+            reviews_tab.click(force=True)
+            page.wait_for_timeout(6000)  # Longer wait for reviews panel to load
+            log('Clicked Reviews tab')
+        else:
+            log('⚠ Could not find Reviews tab after all attempts')
 
-            # Check for no reviews message
-            no_reviews_selectors = [
-                'text="No reviews"',
-                'text="no reviews yet"',
-                'text="Be the first to review"',
-                'text="This place has no reviews"'
-            ]
-            has_no_reviews = False
-            for sel in no_reviews_selectors:
-                if page.locator(sel).count() > 0:
-                    has_no_reviews = True
+        # Check for no reviews
+        if page.locator('text="No reviews" OR text="Be the first to review"').is_visible(timeout=4000):
+            log('ℹ️ This place has no reviews yet')
+            return [], place_name
+
+        # Optional: Sort if not relevant
+        if sort_by != 'relevant':
+            try:
+                sort_btn = page.get_by_role("button", name=re.compile(r"Sort", re.I))
+                sort_btn.click()
+                page.wait_for_timeout(1500)
+                page.get_by_text(sort_by.capitalize(), exact=False).click()
+                page.wait_for_timeout(3000)
+            except:
+                log('⚠ Could not change sort order')
+
+        # Scroll and collect reviews
+        log(f'🔍 Collecting reviews (max {max_reviews})...')
+        stall_rounds = 0
+        prev_count = 0
+        review_panel = page.locator('.m6QErb[aria-label*="USA FOOD"]')  # Adjust aria-label if needed, or use '.section-scrollbox'
+
+        while len(reviews) < max_reviews:
+            review_elements = page.locator('div.jftiEf').all()  # Main review container from your HTML
+
+            for elem in review_elements:
+                if len(reviews) >= max_reviews:
                     break
-
-            if has_no_reviews:
-                log('ℹ️ This place has no reviews yet')
-                return [], place_name
-
-            # Sort reviews if not most relevant
-            if sort_by != 'relevant':
                 try:
-                    sort_button = page.locator('button[aria-label="Sort reviews"]').first
-                    sort_button.click()
-                    time.sleep(1)
-                    sort_options = {
-                        'newest': page.locator('text="Newest"').first,
-                        'highest': page.locator('text="Highest rating"').first,
-                        'lowest': page.locator('text="Lowest rating"').first
+                    reviewer = elem.locator('.d4r55').inner_text().strip() or 'Anonymous'
+                    rating_attr = elem.locator('.kvMYJc').get_attribute('aria-label') or ''
+                    rating = re.search(r'(\d+\.?\d*)', rating_attr).group(1) if re.search(r'(\d+\.?\d*)', rating_attr) else 'N/A'
+                    date = elem.locator('.rsqaWe').inner_text().strip()
+                    text = elem.locator('.wiI7pd').inner_text().strip()
+                    owner_reply = elem.locator('.jVeX0b .wiI7pd').inner_text().strip() if elem.locator('.jVeX0b').count() > 0 else ''
+                    review_id = elem.get_attribute('data-review-id') or ''
+
+                    review = {
+                        'place_name': place_name,
+                        'url': url,
+                        'reviewer': reviewer,
+                        'rating': rating,
+                        'date': date,
+                        'review_text': text,
+                        'owner_reply': owner_reply,
+                        'review_id': review_id
                     }
-                    if sort_by in sort_options:
-                        sort_options[sort_by].click()
-                        time.sleep(3)
+                    if review['review_text'] and review not in reviews:  # Skip empty/duplicates
+                        reviews.append(review)
                 except:
-                    log('⚠ Could not sort reviews')
+                    pass  # Skip malformed reviews
 
-            # Collect reviews
-            log(f'🔍 Collecting reviews (max {max_reviews})...')
+            current_count = len(reviews)
+            log(f'  📊 Found {current_count} reviews...')
 
-            review_panel = page.locator('.section-layout.section-scrollbox')  # Adjust if needed
-            stall_rounds = 0
-            prev_count = 0
+            if current_count >= max_reviews:
+                break
 
-            while len(reviews) < max_reviews:
-                # Extract reviews (adjust selectors based on current UI)
-                review_elements = page.locator('[data-review-id]').all()  # Common selector for reviews
+            # Scroll reviews panel
+            try:
+                review_panel.evaluate('el => el.scrollTop = el.scrollHeight')
+            except:
+                page.mouse.wheel(0, 4000)
 
-                for elem in review_elements:
-                    if len(reviews) >= max_reviews:
-                        break
-                    try:
-                        review = {
-                            'place_name': place_name,
-                            'url': url,
-                            'reviewer': elem.locator('.d4r55').text_content().strip(),  # Adjust
-                            'rating': elem.locator('.kvMYJc').get_attribute('aria-label'),  # Adjust
-                            'date': elem.locator('.rsqaWe').text_content().strip(),  # Adjust
-                            'review_text': elem.locator('.wiI7pd').text_content().strip(),  # Adjust
-                            'owner_reply': elem.locator('.jVeX0b .wiI7pd').text_content().strip() if elem.locator('.jVeX0b').count() > 0 else '',
-                            'review_id': elem.get_attribute('data-review-id')
-                        }
-                        if review not in reviews:  # Avoid duplicates
-                            reviews.append(review)
-                    except:
-                        pass
+            page.wait_for_timeout(2500)
 
-                current_count = len(reviews)
-                log(f'  📊 Found {current_count} reviews...')
-
-                if current_count >= max_reviews:
+            if current_count == prev_count:
+                stall_rounds += 1
+                if stall_rounds >= 6:  # Slightly more tolerant
+                    log('Stopping - no new reviews loaded')
                     break
+            else:
+                stall_rounds = 0
+            prev_count = current_count
 
-                try:
-                    review_panel.evaluate('el => el.scrollTop += 3000')
-                except:
-                    page.mouse.wheel(0, 3000)
-
-                time.sleep(1.5)
-
-                if current_count == prev_count:
-                    stall_rounds += 1
-                    if stall_rounds >= 5:
-                        break
-                else:
-                    stall_rounds = 0
-                prev_count = current_count
-
-            log(f'✓ Scraped {len(reviews)} reviews', 'success')
+        log(f'✓ Scraped {len(reviews)} reviews', 'success')
 
     except Exception as e:
-        log(f'✗ Error: {str(e)[:200]}', 'error')
+        log(f'✗ Error during scraping: {str(e)[:200]}', 'error')
     finally:
-        if 'browser' in locals():
-            browser.close()
+        # Safe cleanup
+        if browser:
+            try:
+                browser.close()
+            except:
+                pass
+        if playwright:
+            try:
+                playwright.stop()
+            except:
+                pass
 
     return reviews, place_name
 
