@@ -347,13 +347,54 @@ def scrape_place_reviews(url, max_reviews, sort_by, job_id):
             log('⚠ Could not find place name')
 
         # Find and click Reviews tab - prioritize get_by_role
-        reviews_tab = None
+       reviews_tab = None
         try:
             reviews_tab = page.get_by_role("tab", name=re.compile(r"Reviews", re.IGNORECASE))
-            if reviews_tab.is_visible(timeout=8000):
-                log('Found Reviews tab via get_by_role')
-        except:
-            pass
+            # Wait longer and ensure visible
+            reviews_tab.wait_for(state="visible", timeout=45000)  # 45s timeout
+            log('Reviews tab found via get_by_role and is visible')
+        except Exception as e:
+            log(f'get_by_role failed: {str(e)}', 'error')
+
+        # Strong fallback using aria-label (very specific from your HTML)
+        if not reviews_tab or not reviews_tab.is_visible(timeout=5000):
+            try:
+                reviews_tab = page.locator('button[role="tab"][aria-label*="Reviews for"]')
+                reviews_tab.wait_for(state="visible", timeout=30000)
+                log('Reviews tab found via aria-label fallback')
+            except:
+                log('Aria-label fallback also failed')
+
+        # Ultimate fallback from your provided HTML structure
+        if not reviews_tab or not reviews_tab.is_visible(timeout=5000):
+            try:
+                reviews_tab = page.locator('button[data-tab-index="1"][role="tab"]')
+                reviews_tab.wait_for(state="visible", timeout=20000)
+                log('Reviews tab found via data-tab-index fallback')
+            except:
+                pass
+
+        if reviews_tab and reviews_tab.is_visible(timeout=10000):
+            try:
+                # Extra scroll to make sure tab is in viewport
+                reviews_tab.scroll_into_view_if_needed()
+                page.wait_for_timeout(1500)
+
+                reviews_tab.click(force=True)  # Force click if partially obscured
+                log('Successfully clicked Reviews tab')
+                page.wait_for_timeout(8000)  # Give generous time for reviews panel to render
+            except Exception as click_err:
+                log(f'Click failed even after visibility: {str(click_err)}', 'error')
+        else:
+            # Debug: Check if any tabs exist at all
+            tab_count = page.locator('button[role="tab"]').count()
+            log(f'No Reviews tab clickable. Total tab buttons found: {tab_count}')
+            if tab_count > 0:
+                # Log first tab's aria-label for debugging
+                first_tab_label = page.locator('button[role="tab"]').first.get_attribute('aria-label') or 'None'
+                log(f'First tab aria-label: {first_tab_label}')
+
+            log('⚠ Could not locate or click Reviews tab after all attempts')
 
         if not reviews_tab:
             # Fallback selectors from your HTML
