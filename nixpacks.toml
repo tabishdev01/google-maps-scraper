@@ -1,11 +1,12 @@
 [phases.setup]
-nixPkgs = ["python310", "nodejs"]
+nixPkgs = ["python310"]
 
 [phases.install]
 cmds = [
-  "pip install -r requirements.txt",
-  "playwright install chromium",
-  "playwright install-deps chromium"
+  "python -m venv /opt/venv",
+  "/opt/venv/bin/pip install -r requirements.txt",
+  "/opt/venv/bin/playwright install chromium",
+  "/opt/venv/bin/playwright install-deps chromium"
 ]
 
 [start]
