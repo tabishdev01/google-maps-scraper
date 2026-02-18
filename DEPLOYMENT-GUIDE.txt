@@ -1,0 +1,104 @@
+╔════════════════════════════════════════════════════════════════╗
+║                                                                ║
+║  GOOGLE MAPS REVIEW SCRAPER - RAILWAY DEPLOYMENT              ║
+║  Free Cloud Hosting - No PC Required                          ║
+║                                                                ║
+╚════════════════════════════════════════════════════════════════╝
+
+┌────────────────────────────────────────────────────────────────┐
+│ STEP 1: UPLOAD TO GITHUB (5 minutes)                          │
+└────────────────────────────────────────────────────────────────┘
+
+1. Go to: https://github.com
+2. Sign in (or create account - it's free!)
+3. Click "New repository" (green button)
+4. Repository name: google-maps-scraper
+5. Make it PUBLIC (Railway free tier requirement)
+6. Click "Create repository"
+7. Click "uploading an existing file"
+8. Drag ALL files from this folder into GitHub
+9. Click "Commit changes"
+
+Files to upload:
+✓ app.py
+✓ requirements.txt
+✓ Procfile
+✓ railway.json
+✓ nixpacks.toml
+✓ .gitignore
+
+┌────────────────────────────────────────────────────────────────┐
+│ STEP 2: DEPLOY TO RAILWAY (5 minutes)                         │
+└────────────────────────────────────────────────────────────────┘
+
+1. Go to: https://railway.app
+2. Click "Start a New Project"
+3. Click "Deploy from GitHub repo"
+4. Authorize GitHub (allow Railway to access your repos)
+5. Select "google-maps-scraper" repository
+6. Wait 3-5 minutes (Railway installs everything automatically)
+7. Click "Settings" tab
+8. Click "Generate Domain"
+9. Copy your URL (e.g., your-app.up.railway.app)
+
+┌────────────────────────────────────────────────────────────────┐
+│ STEP 3: USE YOUR SCRAPER                                      │
+└────────────────────────────────────────────────────────────────┘
+
+1. Open your Railway URL in browser
+2. Upload CSV with Google Maps URLs
+   OR paste URLs directly
+3. Click "Start Scraping"
+4. Watch progress in real-time
+5. Download CSV when done!
+
+┌────────────────────────────────────────────────────────────────┐
+│ RAILWAY FREE TIER                                             │
+└────────────────────────────────────────────────────────────────┘
+
+✓ 500 hours/month FREE
+✓ $5 credit/month FREE
+✓ 1GB RAM
+✓ No credit card required
+
+LIMITS:
+• Small batches (5-10 places): ✓ Works great
+• Medium batches (20-30 places): ✓ Should work
+• Large batches (50+ places): ⚠ May hit memory limit
+
+TIP: Scrape in batches of 10-15 places at a time
+
+┌────────────────────────────────────────────────────────────────┐
+│ TROUBLESHOOTING                                               │
+└────────────────────────────────────────────────────────────────┘
+
+Problem: Build failed
+Fix: Check all files are uploaded to GitHub
+
+Problem: Out of memory
+Fix: Reduce batch size to 5-10 places
+
+Problem: Can't access URL
+Fix: Make sure you clicked "Generate Domain" in Railway
+
+Problem: Slow scraping
+Fix: Normal on free tier (2-5 min per place)
+
+┌────────────────────────────────────────────────────────────────┐
+│ ADVANTAGES OF RAILWAY HOSTING                                 │
+└────────────────────────────────────────────────────────────────┘
+
+✓ No need to keep your PC running
+✓ Access from anywhere (phone, tablet, any computer)
+✓ Share URL with team members
+✓ Always online (apps sleep after 30min but wake instantly)
+✓ Automatic updates (just push to GitHub)
+✓ Free forever (within usage limits)
+
+═══════════════════════════════════════════════════════════════════
+
+That's it! Total time: ~10 minutes
+
+Your scraper will be live at: https://your-app.up.railway.app
+
+═══════════════════════════════════════════════════════════════════
