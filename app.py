@@ -11,6 +11,8 @@ import time
 import threading
 from datetime import datetime
 from flask import Flask, render_template_string, request, jsonify, Response
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+import re
 
 app = Flask(__name__)
 
@@ -81,11 +83,6 @@ input[type="number"]:focus,select:focus{outline:none;border-color:var(--primary)
 .stat-label{font-size:12px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);font-weight:600}
 .btn-success{background:var(--success);color:white}
 .btn-success:hover{background:#059669}
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:#D1D5DB}
-@media(max-width:768px){.options-grid{grid-template-columns:1fr}.stats-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -94,221 +91,363 @@ input[type="number"]:focus,select:focus{outline:none;border-color:var(--primary)
 <h1>🗺️ Google Maps Review Scraper</h1>
 <p class="subtitle">Cloud-Hosted on Railway.app</p>
 </div>
+
 <div class="alert alert-info">
 <span class="alert-icon">☁️</span>
-<div><strong>Cloud Version:</strong> This runs on Railway's free tier. Scraping uses Playwright with Chromium browser. For large batches (50+ places), the free tier may hit memory limits.</div>
+Cloud Version: This runs on Railway's free tier. Scraping uses Playwright with Chromium browser. For large batches (50+ places), the free tier may hit memory limits.
 </div>
-<div class="card" id="input-card">
-<div class="section-title"><span>📝 Step 1: Add Google Maps URLs</span></div>
-<div class="file-upload" id="file-upload-zone">
-<input type="file" id="csv-file" accept=".csv,.txt">
-<div class="file-upload-icon">📄</div>
-<div class="file-upload-text">Drop CSV file here or click to browse</div>
-<div class="file-upload-hint">One Google Maps URL per line</div>
-</div>
-<div class="file-chosen" id="file-chosen">✓ File selected: <span id="file-name"></span></div>
-<div style="text-align:center;margin:20px 0;color:var(--muted);font-weight:600;">OR</div>
-<textarea id="urls-textarea" placeholder="Paste Google Maps URLs here (one per line)
 
-Example:
-https://www.google.com/maps/place/USA+FOOD/@24.8677839,67.0524912,17z/..."></textarea>
-<div class="help-text">Each URL should be a complete Google Maps place link from your browser's address bar</div>
-<div class="section-title" style="margin-top:32px"><span>⚙️ Step 2: Configure Options</span></div>
+<div class="card">
+<div class="section-title">
+<span>Input URLs</span>
+<span class="badge">Required</span>
+</div>
+
+<textarea id="urls-text" placeholder="Paste Google Maps URLs here, one per line&#10;e.g.&#10;https://www.google.com/maps/place/...&#10;https://www.google.com/maps/place/..."></textarea>
+
+<div class="help-text">
+Paste full Google Maps place URLs (must include /place/ and data=)
+</div>
+
+<div class="file-upload">
+<input type="file" id="file-input" accept=".csv,.txt">
+<span class="file-upload-icon">📂</span>
+<p class="file-upload-text">Or upload CSV file</p>
+<p class="file-upload-hint">CSV should have URLs in first column (with or without 'url' header)</p>
+</div>
+
+<p id="file-chosen"></p>
+
 <div class="options-grid">
 <div class="option-group">
-<label for="max-reviews">Max reviews per place</label>
-<input type="number" id="max-reviews" value="200" min="10" max="500" step="10">
+<label for="max-reviews">Max Reviews per Place</label>
+<input type="number" id="max-reviews" value="200" min="1" max="1000">
 </div>
 <div class="option-group">
-<label for="sort-by">Sort reviews by</label>
+<label for="sort-by">Sort Reviews By</label>
 <select id="sort-by">
-<option value="relevant" selected>Most relevant</option>
-<option value="newest">Newest first</option>
-<option value="highest">Highest rating</option>
-<option value="lowest">Lowest rating</option>
+<option value="relevant">Most Relevant</option>
+<option value="newest">Newest</option>
+<option value="highest">Highest Rating</option>
+<option value="lowest">Lowest Rating</option>
 </select>
 </div>
 </div>
-<button class="btn btn-primary" id="start-btn" onclick="startScraping()"><span>▶️</span><span>Start Scraping</span></button>
-<button class="btn btn-secondary" onclick="downloadSample()"><span>📥</span><span>Download Sample CSV Template</span></button>
+
+<button id="start-btn" class="btn btn-primary" disabled>
+<span>🚀 Start Scraping</span>
+</button>
+<button id="reset-btn" class="btn btn-secondary" style="display:none">🔄 Scrape Another Batch</button>
 </div>
-<div class="card" id="progress-section">
-<div class="section-title"><span>🔄 Scraping Progress</span><span class="badge">Live</span></div>
+
+<div id="progress-section" class="card">
+<div class="section-title">🔄 Scraping Progress <span class="badge">Live</span></div>
+
 <div class="progress-header">
-<span class="progress-label" id="progress-label">Initializing...</span>
-<span class="progress-percent" id="progress-percent">0%</span>
+<span class="progress-label">Processing <span id="current-done">0</span> of <span id="total-places">0</span> places</span>
+<span class="progress-percent">0%</span>
 </div>
-<div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
-<div class="log-container" id="log-container"></div>
-<div class="results-section" id="results-section">
+
+<div class="progress-bar">
+<div class="progress-fill" id="progress-fill"></div>
+</div>
+
+<div class="log-container" id="logs"></div>
+</div>
+
+<div id="results-section" class="results-section">
 <div class="stats-grid">
-<div class="stat-card"><div class="stat-value" id="stat-places">0</div><div class="stat-label">Places Scraped</div></div>
-<div class="stat-card"><div class="stat-value" id="stat-reviews">0</div><div class="stat-label">Total Reviews</div></div>
-<div class="stat-card"><div class="stat-value" id="stat-errors">0</div><div class="stat-label">Errors</div></div>
+<div class="stat-card">
+<div class="stat-value" id="places-scraped">0</div>
+<div class="stat-label">Places Scraped</div>
 </div>
-<button class="btn btn-success" id="download-btn" onclick="downloadResults()"><span>⬇️</span><span>Download Results CSV</span></button>
-<button class="btn btn-secondary" onclick="location.reload()"><span>🔄</span><span>Scrape Another Batch</span></button>
+<div class="stat-card">
+<div class="stat-value" id="total-reviews">0</div>
+<div class="stat-label">Total Reviews</div>
+</div>
+<div class="stat-card">
+<div class="stat-value" id="errors-count">0</div>
+<div class="stat-label">Errors</div>
 </div>
 </div>
+
+<button id="download-btn" class="btn btn-success">
+<span>⬇️ Download Results CSV</span>
+</button>
 </div>
+</div>
+
 <script>
-let currentJobId=null,pollInterval=null,lastLogCount=0;
-const fileUpload=document.getElementById('file-upload-zone'),fileInput=document.getElementById('csv-file');
-fileUpload.addEventListener('dragover',e=>{e.preventDefault();fileUpload.style.borderColor='var(--primary)';fileUpload.style.background='#F0F9FF'});
-fileUpload.addEventListener('dragleave',()=>{fileUpload.style.borderColor='var(--border)';fileUpload.style.background=''});
-fileUpload.addEventListener('drop',e=>{e.preventDefault();fileUpload.style.borderColor='var(--border)';fileUpload.style.background='';if(e.dataTransfer.files[0]){fileInput.files=e.dataTransfer.files;showFileName(e.dataTransfer.files[0].name)}});
-fileInput.addEventListener('change',()=>{if(fileInput.files[0])showFileName(fileInput.files[0].name)});
-function showFileName(name){document.getElementById('file-name').textContent=name;document.getElementById('file-chosen').style.display='block'}
-function downloadSample(){const csv='url\\nhttps://www.google.com/maps/place/USA+FOOD/@24.8677839,67.0524912,17z/...';const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='sample_urls.csv';a.click();URL.revokeObjectURL(url)}
-async function startScraping(){const file=fileInput.files[0],urlsText=document.getElementById('urls-textarea').value.trim();if(!file&&!urlsText){alert('Please upload a CSV file or paste URLs in the text area');return}const maxReviews=document.getElementById('max-reviews').value,sortBy=document.getElementById('sort-by').value;const formData=new FormData();if(file)formData.append('file',file);else formData.append('urls_text',urlsText);formData.append('max_reviews',maxReviews);formData.append('sort_by',sortBy);document.getElementById('start-btn').disabled=true;document.getElementById('start-btn').innerHTML='<span>⏳</span><span>Starting...</span>';try{const res=await fetch('/start',{method:'POST',body:formData});const data=await res.json();if(data.error){alert('Error: '+data.error);document.getElementById('start-btn').disabled=false;document.getElementById('start-btn').innerHTML='<span>▶️</span><span>Start Scraping</span>';return}currentJobId=data.job_id;showProgressSection();pollInterval=setInterval(pollStatus,1500)}catch(error){alert('Failed to start scraping: '+error.message);document.getElementById('start-btn').disabled=false;document.getElementById('start-btn').innerHTML='<span>▶️</span><span>Start Scraping</span>'}}
-function showProgressSection(){document.getElementById('input-card').style.display='none';document.getElementById('progress-section').style.display='block'}
-function addLog(message,type=''){const container=document.getElementById('log-container');const line=document.createElement('div');line.className='log-line '+type;const time=new Date().toLocaleTimeString();line.innerHTML=`<span class="log-time">${time}</span>${message}`;container.appendChild(line);container.scrollTop=container.scrollHeight}
-async function pollStatus(){if(!currentJobId)return;try{const res=await fetch(`/status/${currentJobId}`);const data=await res.json();const percent=data.total>0?Math.round((data.done/data.total)*100):0;document.getElementById('progress-fill').style.width=percent+'%';document.getElementById('progress-percent').textContent=percent+'%';document.getElementById('progress-label').textContent=`Processing ${data.done} of ${data.total} places`;if(data.logs&&data.logs.length>lastLogCount){for(let i=lastLogCount;i<data.logs.length;i++)addLog(data.logs[i].msg,data.logs[i].cls||'');lastLogCount=data.logs.length}document.getElementById('stat-places').textContent=data.places_done||0;document.getElementById('stat-reviews').textContent=data.total_reviews||0;document.getElementById('stat-errors').textContent=data.errors||0;if(data.status==='done'||data.status==='error'){clearInterval(pollInterval);document.getElementById('results-section').style.display='block';if(data.status==='done'){document.getElementById('progress-fill').style.width='100%';document.getElementById('progress-percent').textContent='100%';addLog('✓ Scraping completed successfully!','success')}}}catch(error){console.error('Poll error:',error)}}
-function downloadResults(){window.location.href=`/download/${currentJobId}`}
+const urlsText = document.getElementById('urls-text');
+const fileInput = document.getElementById('file-input');
+const fileChosen = document.getElementById('file-chosen');
+const startBtn = document.getElementById('start-btn');
+const resetBtn = document.getElementById('reset-btn');
+const progressSection = document.getElementById('progress-section');
+const resultsSection = document.getElementById('results-section');
+const logsContainer = document.getElementById('logs');
+const progressFill = document.getElementById('progress-fill');
+const currentDone = document.getElementById('current-done');
+const totalPlaces = document.getElementById('total-places');
+const placesScraped = document.getElementById('places-scraped');
+const totalReviews = document.getElementById('total-reviews');
+const errorsCount = document.getElementById('errors-count');
+const downloadBtn = document.getElementById('download-btn');
+const maxReviews = document.getElementById('max-reviews');
+const sortBy = document.getElementById('sort-by');
+
+let jobId = null;
+let pollInterval = null;
+
+function toggleInputs(disabled) {
+  urlsText.disabled = disabled;
+  fileInput.disabled = disabled;
+  maxReviews.disabled = disabled;
+  sortBy.disabled = disabled;
+  startBtn.disabled = disabled;
+  startBtn.textContent = disabled ? 'Scraping...' : '🚀 Start Scraping';
+}
+
+function validateInput() {
+  const hasText = urlsText.value.trim().length > 0;
+  startBtn.disabled = !hasText;
+}
+
+urlsText.addEventListener('input', validateInput);
+
+fileInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) {
+    fileChosen.textContent = `Chosen file: ${file.name}`;
+    fileChosen.style.display = 'block';
+  }
+  validateInput();
+});
+
+startBtn.addEventListener('click', async () => {
+  toggleInputs(true);
+  progressSection.style.display = 'block';
+  logsContainer.innerHTML = '';
+  const formData = new FormData();
+  if (fileInput.files[0]) {
+    formData.append('file', fileInput.files[0]);
+  } else {
+    formData.append('urls_text', urlsText.value);
+  }
+  formData.append('max_reviews', maxReviews.value);
+  formData.append('sort_by', sortBy.value);
+
+  try {
+    const res = await fetch('/start', {
+      method: 'POST',
+      body: formData
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const { job_id } = await res.json();
+    jobId = job_id;
+    pollStatus();
+  } catch (err) {
+    alert('Error starting job: ' + err.message);
+    toggleInputs(false);
+    progressSection.style.display = 'none';
+  }
+});
+
+function pollStatus() {
+  pollInterval = setInterval(async () => {
+    if (!jobId) return;
+    try {
+      const res = await fetch(`/status/${jobId}`);
+      if (!res.ok) throw new Error('Job not found');
+      const data = await res.json();
+      updateProgress(data);
+      if (data.status === 'done') {
+        clearInterval(pollInterval);
+        showResults(data);
+        resetBtn.style.display = 'block';
+      }
+    } catch (err) {
+      clearInterval(pollInterval);
+      alert('Error: ' + err.message);
+      toggleInputs(false);
+    }
+  }, 2000);
+}
+
+function updateProgress(data) {
+  currentDone.textContent = data.done;
+  totalPlaces.textContent = data.total;
+  const percent = Math.round((data.done / data.total) * 100) || 0;
+  progressFill.style.width = `${percent}%`;
+  document.querySelector('.progress-percent').textContent = `${percent}%`;
+
+  logsContainer.innerHTML = data.logs.map(log => `
+    <div class="log-line ${log.cls}">
+      <span class="log-time">${new Date().toLocaleTimeString()}</span>
+      ${log.msg}
+    </div>
+  `).join('');
+  logsContainer.scrollTop = logsContainer.scrollHeight;
+}
+
+function showResults(data) {
+  placesScraped.textContent = data.places_done;
+  totalReviews.textContent = data.total_reviews;
+  errorsCount.textContent = data.errors;
+  resultsSection.style.display = 'block';
+  downloadBtn.onclick = () => window.location.href = `/download/${jobId}`;
+  logsContainer.innerHTML += '<div class="log-line success">✓ Scraping completed successfully!</div>';
+}
+
+resetBtn.addEventListener('click', () => {
+  urlsText.value = '';
+  fileInput.value = '';
+  fileChosen.style.display = 'none';
+  progressSection.style.display = 'none';
+  resultsSection.style.display = 'none';
+  resetBtn.style.display = 'none';
+  toggleInputs(false);
+  validateInput();
+  jobId = null;
+});
 </script>
 </body>
-</html>
-"""
+</html>"""
 
-# Scraping function
 def scrape_place_reviews(url, max_reviews, sort_by, job_id):
-    """Scrape reviews using Playwright"""
-    from playwright.sync_api import sync_playwright
-    import re
-    
     job = jobs[job_id]
     def log(msg, cls=''):
         job['logs'].append({'msg': msg, 'cls': cls})
-    
-    SORT_MAP = {
-        'newest': 'Newest',
-        'relevant': 'Most relevant',
-        'highest': 'Highest rating',
-        'lowest': 'Lowest rating',
-    }
-    
+
     reviews = []
     place_name = 'Unknown'
-    
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        )
-        context = browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            viewport={'width': 1920, 'height': 1080}
-        )
-        page = context.new_page()
-        
-        try:
-            log(f'→ Loading page...', 'info')
-            page.goto(url, wait_until='networkidle', timeout=60000)
-            time.sleep(3)
-            
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+            context = browser.new_context(viewport={'width': 1920, 'height': 1080}, locale='en-US', timezone_id='UTC')
+            page = context.new_page()
+            page.goto(url, timeout=90000)  # Increased timeout
+            log('→ Loading page...')
+
+            # Extra wait for full load
+            time.sleep(5)  # or page.wait_for_load_state('networkidle')
+
+            # Scroll to trigger UI elements
+            page.evaluate("window.scrollBy(0, 500)")
+            time.sleep(1)
+
+            # Get place name (assuming h1 is the selector)
             try:
-                place_name = page.locator('h1').first.inner_text(timeout=5000).strip()
+                place_name = page.locator('h1').text_content(timeout=10000).strip()
                 log(f'📍 Place: {place_name}')
-            except:
-                if '/place/' in url:
-                    place_name = url.split('/place/')[1].split('/')[0].replace('+', ' ')
-                log(f'📍 Using name from URL: {place_name}')
-            
-            try:
-                page.get_by_role('tab', name=re.compile('Reviews', re.I)).click(timeout=5000)
-                log('✓ Opened Reviews tab')
-                time.sleep(2)
-            except:
-                log('⚠ Could not find Reviews tab', 'error')
-            
+            except PlaywrightTimeoutError:
+                log('⚠ Could not find place name')
+
+            # Try to find and click Reviews tab with multiple selectors
+            reviews_tab = None
+            selectors = [
+                'button:has-text("Reviews")',
+                '[role="tab"][aria-label*="Reviews"]',
+                'button[data-value="Reviews"]',
+                'button[jsaction="pane.rating.moreReviews"]',
+                'div[role="tab"][data-index="1"]',  # Sometimes index-based
+                'button[aria-label*="reviews"]'
+            ]
+
+            for sel in selectors:
+                try:
+                    tab = page.locator(sel).first
+                    if tab.is_visible(timeout=5000):
+                        reviews_tab = tab
+                        log(f'Found Reviews tab using {sel}')
+                        break
+                except PlaywrightTimeoutError:
+                    pass
+
+            if reviews_tab:
+                reviews_tab.click()
+                time.sleep(5)  # Wait longer for reviews to load
+            else:
+                log('⚠ Could not find Reviews tab after multiple attempts')
+
+            # Check for no reviews message
+            no_reviews_selectors = [
+                'text="No reviews"',
+                'text="no reviews yet"',
+                'text="Be the first to review"',
+                'text="This place has no reviews"'
+            ]
+            has_no_reviews = False
+            for sel in no_reviews_selectors:
+                if page.locator(sel).count() > 0:
+                    has_no_reviews = True
+                    break
+
+            if has_no_reviews:
+                log('ℹ️ This place has no reviews yet')
+                return [], place_name
+
+            # Sort reviews if not most relevant
             if sort_by != 'relevant':
                 try:
-                    sort_label = SORT_MAP.get(sort_by, 'Most relevant')
-                    page.locator('button[aria-label*="Sort"]').first.click(timeout=5000)
+                    sort_button = page.locator('button[aria-label="Sort reviews"]').first
+                    sort_button.click()
                     time.sleep(1)
-                    page.get_by_role('menuitemradio', name=re.compile(sort_label, re.I)).click(timeout=4000)
-                    log(f'✓ Sorted by: {sort_label}')
-                    time.sleep(2)
+                    sort_options = {
+                        'newest': page.locator('text="Newest"').first,
+                        'highest': page.locator('text="Highest rating"').first,
+                        'lowest': page.locator('text="Lowest rating"').first
+                    }
+                    if sort_by in sort_options:
+                        sort_options[sort_by].click()
+                        time.sleep(3)
                 except:
-                    pass
-            
-            review_panel = page.locator('[role="main"]').first
-            prev_count = 0
-            stall_rounds = 0
-            
+                    log('⚠ Could not sort reviews')
+
+            # Collect reviews
             log(f'🔍 Collecting reviews (max {max_reviews})...')
-            
+
+            review_panel = page.locator('.section-layout.section-scrollbox')  # Adjust if needed
+            stall_rounds = 0
+            prev_count = 0
+
             while len(reviews) < max_reviews:
-                more_buttons = page.locator('button[aria-label*="See more"]').all()
-                for btn in more_buttons:
+                # Extract reviews (adjust selectors based on current UI)
+                review_elements = page.locator('[data-review-id]').all()  # Common selector for reviews
+
+                for elem in review_elements:
+                    if len(reviews) >= max_reviews:
+                        break
                     try:
-                        btn.click(timeout=500)
-                        time.sleep(0.05)
+                        review = {
+                            'place_name': place_name,
+                            'url': url,
+                            'reviewer': elem.locator('.d4r55').text_content().strip(),  # Adjust
+                            'rating': elem.locator('.kvMYJc').get_attribute('aria-label'),  # Adjust
+                            'date': elem.locator('.rsqaWe').text_content().strip(),  # Adjust
+                            'review_text': elem.locator('.wiI7pd').text_content().strip(),  # Adjust
+                            'owner_reply': elem.locator('.jVeX0b .wiI7pd').text_content().strip() if elem.locator('.jVeX0b').count() > 0 else '',
+                            'review_id': elem.get_attribute('data-review-id')
+                        }
+                        if review not in reviews:  # Avoid duplicates
+                            reviews.append(review)
                     except:
                         pass
-                
-                review_elements = page.locator('[data-review-id]').all()
-                
-                for element in review_elements:
-                    try:
-                        review_id = element.get_attribute('data-review-id') or ''
-                        if any(r.get('review_id') == review_id for r in reviews):
-                            continue
-                        
-                        try:
-                            reviewer = element.locator('.d4r55').first.inner_text(timeout=1000).strip()
-                        except:
-                            reviewer = ''
-                        
-                        try:
-                            rating_aria = element.locator('[aria-label*="stars"]').first.get_attribute('aria-label')
-                            rating_match = re.search(r'(\d)', rating_aria or '')
-                            rating = rating_match.group(1) if rating_match else ''
-                        except:
-                            rating = ''
-                        
-                        try:
-                            date = element.locator('.rsqaWe').first.inner_text(timeout=1000).strip()
-                        except:
-                            date = ''
-                        
-                        try:
-                            text = element.locator('.wiI7pd').first.inner_text(timeout=1000).strip()
-                        except:
-                            text = ''
-                        
-                        try:
-                            reply = element.locator('.CDe7pd').first.inner_text(timeout=1000).strip()
-                        except:
-                            reply = ''
-                        
-                        if reviewer or text:
-                            reviews.append({
-                                'review_id': review_id,
-                                'place_name': place_name,
-                                'url': url,
-                                'reviewer': reviewer,
-                                'rating': rating,
-                                'date': date,
-                                'review_text': text,
-                                'owner_reply': reply,
-                            })
-                    except:
-                        pass
-                
+
                 current_count = len(reviews)
                 log(f'  📊 Found {current_count} reviews...')
-                
+
                 if current_count >= max_reviews:
                     break
-                
+
                 try:
                     review_panel.evaluate('el => el.scrollTop += 3000')
                 except:
                     page.mouse.wheel(0, 3000)
-                
+
                 time.sleep(1.5)
-                
+
                 if current_count == prev_count:
                     stall_rounds += 1
                     if stall_rounds >= 5:
@@ -316,14 +455,15 @@ def scrape_place_reviews(url, max_reviews, sort_by, job_id):
                 else:
                     stall_rounds = 0
                 prev_count = current_count
-            
+
             log(f'✓ Scraped {len(reviews)} reviews', 'success')
-            
-        except Exception as e:
-            log(f'✗ Error: {str(e)[:200]}', 'error')
-        finally:
+
+    except Exception as e:
+        log(f'✗ Error: {str(e)[:200]}', 'error')
+    finally:
+        if 'browser' in locals():
             browser.close()
-    
+
     return reviews, place_name
 
 
