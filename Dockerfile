@@ -1,6 +1,5 @@
 FROM python:3.10-slim
 
-# Install system deps for Playwright/Chromium
 RUN apt-get update && apt-get install -y \
     wget curl gnupg ca-certificates \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 \
@@ -8,6 +7,8 @@ RUN apt-get update && apt-get install -y \
     libxdamage1 libxfixes3 libxrandr2 libgbm1 \
     libasound2 libpango-1.0-0 libcairo2 \
     fonts-liberation libappindicator3-1 \
+    libx11-6 libx11-xcb1 libxcb1 libxext6 \
+    libxrender1 libxtst6 libxi6 \
     --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -15,9 +16,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium via Playwright
+# Install Chromium only (skip install-deps, we handle deps above manually)
 RUN playwright install chromium
-RUN playwright install-deps chromium
 
 COPY . .
 
