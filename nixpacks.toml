@@ -1,13 +1,26 @@
 [phases.setup]
 nixPkgs = ["python310"]
 
+[phases.setup.environment]
+PATH = "/opt/venv/bin:$PATH"
+
 [phases.install]
 cmds = [
-  "python -m venv /opt/venv",
+  "python3.10 -m venv /opt/venv",
+  "/opt/venv/bin/pip install --upgrade pip",
   "/opt/venv/bin/pip install -r requirements.txt",
   "/opt/venv/bin/playwright install chromium",
   "/opt/venv/bin/playwright install-deps chromium"
 ]
 
 [start]
-cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 300"
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300"
+```
+
+> Note: workers changed to `1` — Playwright + Chromium is very memory-heavy on Railway's free tier. Two workers will OOM-kill your app.
+
+**requirements.txt** — make sure this exists with exactly:
+```
+flask
+playwright
+gunicorn
