@@ -347,7 +347,7 @@ def scrape_place_reviews(url, max_reviews, sort_by, job_id):
             log('⚠ Could not find place name')
 
         # Find and click Reviews tab - prioritize get_by_role
-       reviews_tab = None
+        reviews_tab = None
         try:
             reviews_tab = page.get_by_role("tab", name=re.compile(r"Reviews", re.IGNORECASE))
             # Wait longer and ensure visible
